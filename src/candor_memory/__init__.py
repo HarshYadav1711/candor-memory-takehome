@@ -3,16 +3,27 @@
 from .ingest import load_units, parse_datetime
 from .models import MemoryUnit
 from .questions import MemoryQuestion, QuestionFormatError, load_questions, parse_question
-from .retrieval import HierarchicalRetriever, RetrievalConfig
+from .retrieval import (
+    HierarchicalRetriever,
+    Intent,
+    QueryPlan,
+    RetrievalConfig,
+    TemporalMode,
+    build_query_plan,
+)
 from .safety import sanitize_text
 from .visibility import visible_units
 
 __all__ = [
     "HierarchicalRetriever",
+    "Intent",
     "MemoryUnit",
     "MemoryQuestion",
     "QuestionFormatError",
+    "QueryPlan",
     "RetrievalConfig",
+    "TemporalMode",
+    "build_query_plan",
     "load_units",
     "load_questions",
     "parse_datetime",
@@ -20,4 +31,3 @@ __all__ = [
     "sanitize_text",
     "visible_units",
 ]
-

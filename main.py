@@ -20,27 +20,41 @@ from candor_memory import (  # noqa: E402
 )
 
 
-def _write_memory_answers(input_path: Path, output_path: Path, data_dir: Path) -> int:
+def _write_memory_answers(
+    input_path: Path,
+    output_path: Path,
+    data_dir: Path,
+    debug_output: Path | None = None,
+) -> int:
     questions = load_questions(input_path)
     retriever = HierarchicalRetriever(load_units(data_dir))
     rows = []
+    debug_rows = []
     for question in questions:
+        retrieved, debug = retriever.retrieve_with_debug(
+            question.question, question.as_of
+        )
         rows.append(
             {
                 "id": question.question_id,
                 "answer": "I don't know",
                 "sources": [],
-                "retrieved": list(
-                    retriever.retrieve(question.question, question.as_of)
-                ),
+                "retrieved": list(retrieved),
                 "abstained": True,
             }
         )
+        if debug_output is not None:
+            debug_rows.append({"id": question.question_id, **debug})
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8", newline="\n") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    if debug_output is not None:
+        debug_output.parent.mkdir(parents=True, exist_ok=True)
+        with debug_output.open("w", encoding="utf-8", newline="\n") as handle:
+            for row in debug_rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     return len(rows)
 
 
@@ -69,12 +83,22 @@ def main() -> None:
     memory_parser.add_argument("--input", type=Path, required=True)
     memory_parser.add_argument("--output", type=Path, required=True)
     memory_parser.add_argument("--data", type=Path, default=ROOT / "data")
+    memory_parser.add_argument(
+        "--debug-output",
+        type=Path,
+        help="optional safe JSONL scoring trace",
+    )
     args = parser.parse_args()
     try:
         if args.command == "summary":
             _print_summary(args.data)
         else:
-            _write_memory_answers(args.input, args.output, args.data)
+            _write_memory_answers(
+                args.input,
+                args.output,
+                args.data,
+                args.debug_output,
+            )
     except (FileNotFoundError, QuestionFormatError, ValueError) as exc:
         parser.error(str(exc))
 
