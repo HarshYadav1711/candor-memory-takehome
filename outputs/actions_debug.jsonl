@@ -1,0 +1,12 @@
+{"id": "ACT-TR-01", "atomic_intents": ["message_send"], "safety_decision": "none", "action_types": ["slack.send_message"]}
+{"id": "ACT-TR-02", "atomic_intents": ["gmail_send"], "safety_decision": "none", "action_types": ["gmail.send"]}
+{"id": "ACT-TR-03", "atomic_intents": ["reminder_create"], "safety_decision": "none", "action_types": ["reminder.create"]}
+{"id": "ACT-TR-04", "atomic_intents": ["calendar_update"], "safety_decision": "none", "action_types": ["calendar.update_event"]}
+{"id": "ACT-TR-05", "atomic_intents": ["app_open"], "safety_decision": "none", "action_types": ["app.open"]}
+{"id": "ACT-TR-06", "atomic_intents": ["message_send"], "safety_decision": "none", "action_types": ["slack.send_message"]}
+{"id": "ACT-TR-07", "atomic_intents": ["calendar_create"], "safety_decision": "none", "action_types": ["calendar.create_event"]}
+{"id": "ACT-TR-08", "atomic_intents": ["memory_question"], "safety_decision": "none", "action_types": ["memory.ask"]}
+{"id": "ACT-TR-09", "atomic_intents": ["message_send"], "safety_decision": "none", "action_types": ["clarify"]}
+{"id": "ACT-TR-10", "atomic_intents": ["gmail_send", "message_send"], "safety_decision": "none", "action_types": ["gmail.send", "slack.send_message"]}
+{"id": "ACT-TR-11", "safety_decision": "confirmation_required", "action_types": ["confirm"]}
+{"id": "ACT-TR-12", "atomic_intents": ["reminder_create"], "safety_decision": "none", "action_types": ["reminder.create"]}

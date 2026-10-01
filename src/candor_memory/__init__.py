@@ -22,6 +22,15 @@ from .retrieval import (
 )
 from .safety import sanitize_text
 from .visibility import visible_units
+from .actions import (
+    ACTION_TYPES,
+    ActionCommand,
+    ActionCommandFormatError,
+    ActionPlan,
+    ActionPlanner,
+    PlannedAction,
+    load_action_commands,
+)
 
 __all__ = [
     "HierarchicalRetriever",
@@ -46,4 +55,11 @@ __all__ = [
     "parse_question",
     "sanitize_text",
     "visible_units",
+    "ACTION_TYPES",
+    "ActionCommand",
+    "ActionCommandFormatError",
+    "ActionPlan",
+    "ActionPlanner",
+    "PlannedAction",
+    "load_action_commands",
 ]

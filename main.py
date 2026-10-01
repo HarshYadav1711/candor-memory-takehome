@@ -13,11 +13,47 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from candor_memory import (  # noqa: E402
+    ActionCommandFormatError,
+    ActionPlanner,
     GroundedMemory,
     QuestionFormatError,
     load_questions,
+    load_action_commands,
     load_units,
 )
+
+
+def _write_action_plans(
+    input_path: Path,
+    output_path: Path,
+    data_dir: Path,
+    debug_output: Path | None = None,
+) -> int:
+    commands = load_action_commands(input_path)
+    units = load_units(data_dir)
+    planner = ActionPlanner(data_dir, units=units)
+    rows = []
+    debug_rows = []
+    for command in commands:
+        plan = planner.plan(command.command, command.as_of)
+        rows.append(
+            {
+                "id": command.command_id,
+                "actions": [action.to_dict() for action in plan.actions],
+            }
+        )
+        if debug_output is not None:
+            debug_rows.append({"id": command.command_id, **dict(plan.debug)})
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="\n") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    if debug_output is not None:
+        debug_output.parent.mkdir(parents=True, exist_ok=True)
+        with debug_output.open("w", encoding="utf-8", newline="\n") as handle:
+            for row in debug_rows:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return len(rows)
 
 
 def _write_memory_answers(
@@ -97,11 +133,16 @@ def main() -> None:
         type=Path,
         help="optional safe JSONL scoring trace",
     )
+    actions_parser = subparsers.add_parser("actions", help="plan dry-run actions for JSONL commands")
+    actions_parser.add_argument("--input", type=Path, required=True)
+    actions_parser.add_argument("--output", type=Path, required=True)
+    actions_parser.add_argument("--data", type=Path, default=ROOT / "data")
+    actions_parser.add_argument("--debug-output", type=Path, help="optional safe JSONL planning trace")
     args = parser.parse_args()
     try:
         if args.command == "summary":
             _print_summary(args.data)
-        else:
+        elif args.command == "memory":
             _write_memory_answers(
                 args.input,
                 args.output,
@@ -109,7 +150,9 @@ def main() -> None:
                 args.answerer,
                 args.debug_output,
             )
-    except (FileNotFoundError, QuestionFormatError, ValueError) as exc:
+        else:
+            _write_action_plans(args.input, args.output, args.data, args.debug_output)
+    except (ActionCommandFormatError, FileNotFoundError, QuestionFormatError, ValueError) as exc:
         parser.error(str(exc))
 
 
