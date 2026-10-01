@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
 from candor_memory import (  # noqa: E402
-    HierarchicalRetriever,
+    GroundedMemory,
     QuestionFormatError,
     load_questions,
     load_units,
@@ -24,23 +24,26 @@ def _write_memory_answers(
     input_path: Path,
     output_path: Path,
     data_dir: Path,
+    answerer: str = "extractive",
     debug_output: Path | None = None,
 ) -> int:
     questions = load_questions(input_path)
-    retriever = HierarchicalRetriever(load_units(data_dir))
+    memory = GroundedMemory(load_units(data_dir))
     rows = []
     debug_rows = []
     for question in questions:
-        retrieved, debug = retriever.retrieve_with_debug(
-            question.question, question.as_of
+        answer, debug = memory.answer(
+            question.question,
+            question.as_of,
+            mode=answerer,
         )
         rows.append(
             {
                 "id": question.question_id,
-                "answer": "I don't know",
-                "sources": [],
-                "retrieved": list(retrieved),
-                "abstained": True,
+                "answer": answer.answer,
+                "sources": list(answer.sources),
+                "retrieved": list(answer.retrieved),
+                "abstained": answer.abstained,
             }
         )
         if debug_output is not None:
@@ -84,6 +87,12 @@ def main() -> None:
     memory_parser.add_argument("--output", type=Path, required=True)
     memory_parser.add_argument("--data", type=Path, default=ROOT / "data")
     memory_parser.add_argument(
+        "--answerer",
+        choices=("extractive", "openai", "auto"),
+        default="extractive",
+        help="grounded answer writer (default: deterministic offline extractive)",
+    )
+    memory_parser.add_argument(
         "--debug-output",
         type=Path,
         help="optional safe JSONL scoring trace",
@@ -97,6 +106,7 @@ def main() -> None:
                 args.input,
                 args.output,
                 args.data,
+                args.answerer,
                 args.debug_output,
             )
     except (FileNotFoundError, QuestionFormatError, ValueError) as exc:

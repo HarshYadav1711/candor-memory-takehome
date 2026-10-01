@@ -3,6 +3,15 @@
 from .ingest import load_units, parse_datetime
 from .models import MemoryUnit
 from .questions import MemoryQuestion, QuestionFormatError, load_questions, parse_question
+from .answering import (
+    EvidenceBundle,
+    EvidenceItem,
+    GroundedMemory,
+    MemoryAnswer,
+    OpenAIConfig,
+    SupportDecision,
+    SupportStatus,
+)
 from .retrieval import (
     HierarchicalRetriever,
     Intent,
@@ -16,13 +25,20 @@ from .visibility import visible_units
 
 __all__ = [
     "HierarchicalRetriever",
+    "GroundedMemory",
     "Intent",
+    "EvidenceBundle",
+    "EvidenceItem",
     "MemoryUnit",
+    "MemoryAnswer",
     "MemoryQuestion",
     "QuestionFormatError",
     "QueryPlan",
     "RetrievalConfig",
     "TemporalMode",
+    "OpenAIConfig",
+    "SupportDecision",
+    "SupportStatus",
     "build_query_plan",
     "load_units",
     "load_questions",
