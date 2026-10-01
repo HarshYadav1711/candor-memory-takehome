@@ -1,7 +1,11 @@
 __pycache__/
 *.py[cod]
+.agents/
+.codex/
 .coverage
 .pytest_cache/
+.env
 .venv/
+node_modules/
 venv/
 
