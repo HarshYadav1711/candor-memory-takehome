@@ -17,9 +17,11 @@ from candor_memory import (  # noqa: E402
     ActionPlanner,
     GroundedMemory,
     QuestionFormatError,
+    TextOS,
     load_questions,
     load_action_commands,
     load_units,
+    run_textos,
 )
 
 
@@ -138,6 +140,11 @@ def main() -> None:
     actions_parser.add_argument("--output", type=Path, required=True)
     actions_parser.add_argument("--data", type=Path, default=ROOT / "data")
     actions_parser.add_argument("--debug-output", type=Path, help="optional safe JSONL planning trace")
+    textos_parser = subparsers.add_parser("textos", help="interactive memory and dry-run action shell")
+    textos_parser.add_argument("--once", help="handle one input and exit")
+    textos_parser.add_argument("--as-of", help="ISO-8601 reference time")
+    textos_parser.add_argument("--data", type=Path, default=ROOT / "data")
+    textos_parser.add_argument("--json", action="store_true", help="emit machine-readable JSON only")
     args = parser.parse_args()
     try:
         if args.command == "summary":
@@ -150,8 +157,15 @@ def main() -> None:
                 args.answerer,
                 args.debug_output,
             )
-        else:
+        elif args.command == "actions":
             _write_action_plans(args.input, args.output, args.data, args.debug_output)
+        else:
+            run_textos(
+                TextOS(args.data),
+                once=args.once,
+                as_of=args.as_of,
+                json_output=args.json,
+            )
     except (ActionCommandFormatError, FileNotFoundError, QuestionFormatError, ValueError) as exc:
         parser.error(str(exc))
 

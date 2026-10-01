@@ -22,6 +22,7 @@ from .retrieval import (
 )
 from .safety import sanitize_text
 from .visibility import visible_units
+from .textos import TextOS, format_textos_response, run_textos
 from .actions import (
     ACTION_TYPES,
     ActionCommand,
@@ -55,6 +56,9 @@ __all__ = [
     "parse_question",
     "sanitize_text",
     "visible_units",
+    "TextOS",
+    "format_textos_response",
+    "run_textos",
     "ACTION_TYPES",
     "ActionCommand",
     "ActionCommandFormatError",
