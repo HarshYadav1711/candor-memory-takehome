@@ -1,4 +1,4 @@
-"""Evaluate the frozen memory runtime on the independent development holdout."""
+"""Evaluate the memory runtime on one explicit generalization split."""
 
 from __future__ import annotations
 
@@ -27,17 +27,20 @@ def _matches(requirement: object, text: str) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--suite", type=Path, default=ROOT / "evals" / "memory_generalization.jsonl")
+    parser.add_argument("--suite", type=Path, default=ROOT / "evals" / "memory_generalization_dev.jsonl")
     parser.add_argument("--data", type=Path, default=ROOT / "data")
     parser.add_argument("--failures", type=Path, default=ROOT / "outputs" / "generalization_memory_failures.jsonl")
+    parser.add_argument("--no-failures", action="store_true")
     args = parser.parse_args()
 
-    rows = load_jsonl(args.suite)
+    suite = args.suite if args.suite.is_absolute() else ROOT / args.suite
+    failures = args.failures if args.failures.is_absolute() else ROOT / args.failures
+    rows = load_jsonl(suite)
     memory = GroundedMemory(load_units(args.data))
     results: list[dict[str, object]] = []
     for row in rows:
         runtime = {key: row[key] for key in ("id", "question", "as_of")}
-        answer, _ = memory.answer(
+        answer, debug = memory.answer(
             str(runtime["question"]), parse_datetime(str(runtime["as_of"])), mode="extractive"
         )
         expected = row["expected"]
@@ -49,6 +52,20 @@ def main() -> int:
         missing = [term for term in required if not _matches(term, text)]
         forbidden = [term for term in excluded if _matches(term, text)]
         passed = answer.abstained == should_abstain and not missing and not forbidden
+        retrieved = set(answer.retrieved)
+        expected_sources = {str(value) for value in row.get("evidence", [])}
+        if expected_sources and not expected_sources <= retrieved:
+            failure_class = "retrieval_failure"
+        elif should_abstain and not answer.abstained:
+            failure_class = "missed_abstention"
+        elif not should_abstain and answer.abstained:
+            support = debug.get("support", {})
+            signals = support.get("signals", {}) if isinstance(support, dict) else {}
+            failure_class = str(signals.get("failure_class", "incorrect_abstention"))
+        elif missing or forbidden:
+            failure_class = "composition_failure"
+        else:
+            failure_class = None
         results.append(
             {
                 "id": runtime["id"],
@@ -57,6 +74,7 @@ def main() -> int:
                 "pass": passed,
                 "missing": missing,
                 "forbidden": forbidden,
+                "failure_class": failure_class,
                 "actual": {
                     "answer": answer.answer,
                     "sources": list(answer.sources),
@@ -66,11 +84,12 @@ def main() -> int:
             }
         )
 
-    args.failures.parent.mkdir(parents=True, exist_ok=True)
-    with args.failures.open("w", encoding="utf-8", newline="\n") as handle:
-        for result in results:
-            if not result["pass"]:
-                handle.write(json.dumps(result, ensure_ascii=False) + "\n")
+    if not args.no_failures:
+        failures.parent.mkdir(parents=True, exist_ok=True)
+        with failures.open("w", encoding="utf-8", newline="\n") as handle:
+            for result in results:
+                if not result["pass"]:
+                    handle.write(json.dumps(result, ensure_ascii=False) + "\n")
 
     by_category: dict[str, list[bool]] = defaultdict(list)
     for result in results:
@@ -83,6 +102,10 @@ def main() -> int:
         if isinstance(row.get("expected"), dict) and row["expected"].get("answer_excludes")
     ]
     forbidden_checks = [result for _, result in exclusion_cases if result["forbidden"]]
+    failure_classes: dict[str, int] = defaultdict(int)
+    for result in results:
+        if not result["pass"] and result["failure_class"]:
+            failure_classes[str(result["failure_class"])] += 1
 
     def rate(values: list[dict[str, object]]) -> float:
         return round(sum(bool(value["pass"]) for value in values) / len(values), 4) if values else 0.0
@@ -100,8 +123,9 @@ def main() -> int:
             category: round(sum(values) / len(values), 4)
             for category, values in sorted(by_category.items())
         },
+        "failure_classes": dict(sorted(failure_classes.items())),
         "failures": sum(not bool(result["pass"]) for result in results),
-        "failure_artifact": str(args.failures.relative_to(ROOT)),
+        "failure_artifact": None if args.no_failures else str(failures.relative_to(ROOT)),
     }
     print(json.dumps(summary, indent=2))
     return 0

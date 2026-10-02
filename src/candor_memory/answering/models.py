@@ -41,7 +41,7 @@ class EvidenceBundle:
 class SupportDecision:
     status: SupportStatus
     reason: str
-    signals: Mapping[str, float | int | bool]
+    signals: Mapping[str, object]
 
 
 @dataclass(frozen=True)

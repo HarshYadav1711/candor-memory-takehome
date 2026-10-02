@@ -188,3 +188,17 @@ Detailed failures are regenerated at:
 - Negative cases were checked against the supplied visible corpus, but absence is always easier to establish for concrete slots than broad open-ended questions.
 - The suite measures the frozen deterministic extractive path and dry-run planner only; it does not use the optional model writer.
 - No Phase 7B answer refactor or Phase 7C action refactor is included here.
+
+## Phase 7B — generic grounded answering and abstention
+
+Phase 7B replaces the fixed answer-selector chain with one offline evidence path:
+
+`QuestionFrame -> frozen retrieved evidence -> clause-level Claim values -> requested-slot support -> generic composer`
+
+The old launch/flight/metric/ownership/conditional/choice/disagreement/attribution/commitment selector precedence was removed from the primary path. The replacement uses small immutable `QuestionFrame`, `Claim`, and `EvidenceAnalysis` models. Frames derive generic answer kinds and relation/modality cues compositionally. Claims are built only from sanitized, citable evidence clauses and retain source, actor, availability, structured metadata, values, modality, correction, and attribution fields. Support requires subject, relation, compatible value, modality, and attribution alignment; topic overlap alone is insufficient. Unsupported slots return the exact `I don't know.` contract with no sources. Current-state ordering prefers corrected, visible later claims, while historical visibility remains owned by the existing visibility layer.
+
+Generic composition covers dates/times, quantities, money, locations, identity, reasons, status, conditional/proposed/completed/cancelled claims, direct versus reported speech, conflicts, corrections, and small multi-claim bundles. Structured calendar metadata is preferred where it supplies the requested value. Runtime receives only `id`, `question`, and `as_of`; expected/gold fields remain evaluator-only.
+
+The 58-case suite is split deterministically by case ID hash with category balancing into 39 DEV and 19 HOLDOUT cases. DEV iteration reached 79.49% overall, 72.00% supported-answer accuracy, 92.86% abstention accuracy, and 100% forbidden-term accuracy. Remaining DEV failures were 5 frozen retrieval failures, 2 composition failures, and 1 missed abstention (the supplied corpus contains an aligned Denver hotel statement for that negative case). The one permitted exit HOLDOUT run reached 47.37% overall, 30.77% supported-answer accuracy, 83.33% abstention accuracy, and 50.00% forbidden-term accuracy (10 failures; no failure artifact was written). It was not used for further tuning.
+
+The official local train scorer remained retrieval-clean but exposed a broad composition gap after selector removal: retrieval was 100%; answer accuracy was 48.15% strict and 55.56% lenient with `judge=none`. This is reported as a limitation rather than repaired with train-question-specific branches. Existing full tests, visibility, sanitation, action, TextOS, and retrieval-freeze tests remain in scope; action planning and retrieval were not refactored.

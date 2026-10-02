@@ -12,7 +12,7 @@ from .evidence import build_evidence_bundle
 from .extractive import write_extractive_answer
 from .model_writer import OpenAIAnswerWriter, OpenAIConfig, validate_model_output
 from .models import EvidenceBundle, MemoryAnswer, SupportStatus
-from .support import decide_support
+from .support import analyze_evidence, decide_support
 
 
 AnswererMode = Literal["extractive", "openai", "auto"]
@@ -54,8 +54,10 @@ class GroundedMemory:
             question,
             as_of,
             plan,
+            limit=20,
         )
-        decision = decide_support(bundle)
+        analysis = analyze_evidence(bundle)
+        decision = decide_support(bundle, analysis)
         debug = {
             **retrieval_debug,
             "support": {
@@ -64,11 +66,16 @@ class GroundedMemory:
                 "signals": dict(decision.signals),
             },
             "answerer": mode,
+            "frame": {
+                "answer_kind": analysis.frame.answer_kind.value,
+                "relations": list(analysis.frame.relation_terms),
+                "modality": analysis.frame.modality_requirement.value,
+            },
         }
         if decision.status == SupportStatus.INSUFFICIENT_EVIDENCE:
             return MemoryAnswer("I don't know.", (), retrieved, True), debug
 
-        fallback = write_extractive_answer(bundle)
+        fallback = write_extractive_answer(bundle, analysis)
         draft = fallback
         writer = self._model_writer
         if writer is None:
