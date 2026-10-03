@@ -223,6 +223,52 @@ The official local train scorer remained retrieval-clean but exposed a broad com
 16. **One-time HOLDOUT:** The single exit run scored 19/23 (82.61%) overall and type correctness, 82.76% argument accuracy, 75.00% destructive confirmation, 100.00% destructive no-side-effect safety, 100.00% ambiguity, and 100.00% compound count. No case-level failure artifact was written and the holdout was not used for tuning.
 17. **Official train regression:** The official `actions_train.jsonl` scorer remains 12/12 (100.00%) with 100.00% argument accuracy. No train-specific recovery rule was added.
 18. **Memory freeze proof:** The diff from Phase 7B HEAD touches only `src/candor_memory/actions/` under runtime source. There is no diff in answering, retrieval, visibility, ingestion, memory sanitation, BM25, or memory planning. The memory holdout was not rerun.
-19. **Tests, determinism, and safety:** All 222 unit tests pass with child-process UTF-8 enabled on Windows. This includes 35 new synthetic action tests, repeated-plan byte determinism, allowlisted outputs, dataset-backed IDs, unknown-identity rejection, global destructive gating, and no-partial-side-effect cases. The submission verifier passes its unit, retrieval-freeze, retrieval-scorer, action-scorer, schema, and bounds stages, then exits 1 only because the frozen Phase 7B memory answer score remains below its legacy threshold.
+19. **Tests, determinism, and safety:** All 222 unit tests pass with child-process UTF-8 enabled on Windows. This includes 35 new synthetic action tests, repeated-plan byte determinism, allowlisted outputs, dataset-backed IDs, unknown-identity rejection, global destructive gating, and no-partial-side-effect cases. At the time of Phase 7C, the legacy submission verifier still treated train-perfect memory accuracy as a hard gate and therefore exited 1 on the frozen Phase 7B answer score; Phase 7E later reframed that score as a reported evaluation metric rather than a correctness invariant.
 20. **Remaining general failure classes:** The one-time holdout reports four failures by class only: two operation-classification, one channel-resolution, and one destructive-safety failure. They were deliberately not inspected or patched after the exit run.
 21. **Limitations:** The 80-case source suite was hand-authored and inspected before splitting, so the 23-case exit partition is a disciplined non-iterated partition, not an external blind benchmark. Parsing remains deterministic and lexicon-backed rather than a general semantic model; unsupported operations and uncertain media/entities intentionally clarify.
+
+## Rejected Phase 7D retrieval experiment
+
+This section preserves a failed experiment. It is engineering history, not accepted runtime.
+
+### Goal
+
+Improve memory generalization after Phase 7B/7C by changing retrieval (and limited claim/support composition helpers) so that paraphrased and multi-evidence questions retrieve the correct exact units more often, without weakening abstention or visibility/safety invariants.
+
+### Retrieval V2 architecture (brief)
+
+The experimental path still began with `visible_units(as_of)` and indexed only `safe_text`. It added multi-view candidate discovery: word BM25, structured field matching, phrase/proximity, high-information character n-grams, relation-aware query views, corpus-derived aliases, and generic query decomposition fused with weighted reciprocal-rank fusion. Parent relevance assisted discovery; final citations remained exact units. Actions, TextOS, ingestion, sanitation, and temporal visibility were intended to stay frozen.
+
+### DEV result (Shadow V2)
+
+`evals/memory_shadow_v2.jsonl` (78 hand-authored cases) was split into 59 DEV / 19 HOLDOUT cases. Final DEV measurement: **48/59 overall (81.36%)**, supported-answer accuracy **73.81%**, abstention accuracy **100.00%**. Failures were mostly retrieval-correct/answer-failed composition gaps, not missed abstentions.
+
+### Single-run Shadow V2 holdout result
+
+The holdout was evaluated exactly once at exit and not tuned afterwards:
+
+| Metric | Result |
+|---|---:|
+| Overall | 31.58% (6/19) |
+| Supported-answer accuracy | 28.57% |
+| Abstention accuracy | 40.00% |
+| Supported multi-evidence | 0.00% |
+
+This did **not** meet the aspirational material-improvement criterion relative to the earlier Phase 7B memory holdout (47.37% overall).
+
+### Official retrieval regression
+
+On the provided train set, the experimental retrieval path scored **88.0%** primary retrieval (vs **100%** on the accepted pre–7D retrieval), with exact-passage complete@5/@10/@20 of 68%/88%/92% and whole-record 72%/92%/96%. Forbidden-record counts remained zero. Official memory `judge=none` stayed near the Phase 7B composition level (strict ~48.1%). Official actions remained 12/12.
+
+### Decision
+
+**Reject Phase 7D.** Restore the accepted Phase 7C architecture at commit `28827a8` (Phase 7B answering + Phase 7C actions + pre–7D retrieval). Do not ship Retrieval V2, do not commit the experimental patch to the public resubmission, and do not treat Shadow V2 holdout failures as a tuning loop.
+
+### Why the accepted Phase 7C architecture was restored
+
+1. The single-exit Shadow V2 holdout did not improve generalization.
+2. Official retrieval regressed from a clean 100% primary score.
+3. Actions and answering were already frozen after disciplined holdouts; expanding retrieval risk without holdout gain violated the freeze contract.
+4. Keeping the failed experiment documented demonstrates evaluation discipline: train/DEV gains alone are insufficient when the exit holdout and official retrieval both fail the acceptance bar.
+
+Phase 7E (this resubmission packaging) documents the rejection and does not restore any Phase 7D runtime changes.

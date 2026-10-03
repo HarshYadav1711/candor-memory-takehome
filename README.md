@@ -1,10 +1,8 @@
 # Candor Memory Take-Home
 
-This repository implements a provenance-aware work memory for the supplied Candor dataset, plus a deterministic TextOS planner that previews actions without executing them. The required path is offline, uses only the Python standard library, and enforces temporal visibility and safety before retrieval or answering.
+Offline, provenance-aware work memory over the supplied Candor corpus, plus a deterministic TextOS dry-run planner. The required path uses only the Python 3.10+ standard library. No package install, database, vector index, or hosted model is required.
 
 ## Quick Start
-
-Requirements: Python 3.10 or newer. No package installation is required.
 
 ```bash
 python3 main.py memory \
@@ -20,9 +18,7 @@ python3 main.py textos
 python3 scripts/verify_submission.py
 ```
 
-Windows users can replace `python3` with the command for their installed Python 3.10+ interpreter, such as `py -3`.
-
-TextOS also supports one-shot and JSON modes:
+Windows: use `py -3` or `python` for a Python 3.10+ interpreter.
 
 ```bash
 python3 main.py textos --once "what's our launch date?"
@@ -31,17 +27,15 @@ python3 main.py textos --once "Open Figma" --json
 
 Use `--as-of ISO_TIMESTAMP` to answer or plan as of a specific moment.
 
-## What I Built
+## A. What the system does
 
-- Canonical ingestion for meetings, dictation, Slack, Gmail, Google Calendar, Codex, and ChatGPT.
-- Temporal visibility that applies source delivery times, Slack edits, and deletions before retrieval.
-- Hierarchical lexical retrieval with record-level candidate selection and exact citable-unit ranking.
-- Deterministic query planning and reranking for sources, people, dates, intent, changes, disagreements, and temporal anchors.
-- Grounded extractive answers with explicit support decisions, source validation, and abstention.
-- A typed, deterministic dry-run action planner for TextOS commands.
-- An optional interactive terminal shell over the frozen memory and action systems.
+- Ingests meetings, dictation, Slack, Gmail, Google Calendar, Codex, and ChatGPT into immutable citable units.
+- Applies temporal visibility (delivery time, Slack edits/deletions) before retrieval.
+- Retrieves exact citable units with hierarchical lexical ranking.
+- Answers only from retrieved visible evidence, with strict abstention when the requested slot is unsupported.
+- Plans typed TextOS actions without executing them (dry-run only).
 
-## Architecture
+## B. Architecture
 
 ```mermaid
 flowchart TD
@@ -50,27 +44,34 @@ flowchart TD
     C --> D[Temporal visibility at as_of]
     D --> E[QueryPlan]
     E --> F[Hierarchical BM25-style retrieval]
-    F --> G[Exact-unit reranking and diversity]
+    F --> G[Exact-unit reranking]
     G --> H[EvidenceBundle]
-    H --> I[SupportDecision]
-    I -->|supported| J[Grounded extractive answer]
-    I -->|insufficient| K[I don't know]
+    H --> I[QuestionFrame + Claims]
+    I --> J[Requested-slot support]
+    J -->|supported| K[Generic extractive answer]
+    J -->|unsupported| L[I don't know]
 
-    L[Natural-language command] --> M[Atomic command parser]
-    M --> N[Entity and time resolution]
-    N --> O[Memory grounding when required]
-    O --> P[Safety and ambiguity gates]
-    P --> Q[Typed dry-run actions]
+    M[Natural-language command] --> N[ActionFrame]
+    N --> O[Operation / channel / slots]
+    O --> P[Dataset entity and event resolution]
+    P --> Q[Global SAFE / CONFIRM / CLARIFY gate]
+    Q --> R[Typed dry-run actions]
 
-    R[TextOS shell] --> E
-    R --> M
+    S[TextOS shell] --> E
+    S --> N
 ```
 
-The two paths share canonical data, visibility, and safety rules. Neither path requires a database, vector index, hosted model, or external service.
+Accepted runtime layers:
 
-## Temporal Model
+| Layer | Status |
+|---|---|
+| Retrieval | Accepted pre–Phase 7D hierarchical lexical retrieval (frozen) |
+| Memory answering | Phase 7B generic frames/claims/support (frozen) |
+| Actions | Phase 7C compositional ActionFrame + global safety (frozen) |
 
-Each citable unit receives an availability timestamp based on its source:
+## C. Temporal semantics
+
+Each citable unit receives an availability timestamp from its source:
 
 | Source | Availability |
 |---|---|
@@ -82,58 +83,62 @@ Each citable unit receives an availability timestamp based on its source:
 | Codex | final session-event timestamp |
 | ChatGPT | individual message `create_time` |
 
-`as_of` is applied before retrieval. Slack edits replace the target's projected text from the edit time onward. Deleted Slack targets disappear from the deletion time onward, while the deletion event remains independently citable. The immutable ingested units are not rewritten.
+`as_of` is applied before retrieval. Slack edits replace projected text from the edit time onward. Deleted Slack targets disappear from the deletion time onward; the deletion event remains independently citable. Ingested units are never rewritten.
 
-## Retrieval
+## D. Provenance and safety
 
-Retrieval is implemented with the standard library and a direct BM25-style index. It first ranks records, then reranks exact units within the strongest records. A deterministic `QueryPlan` supplies lexical expansions, source hints, people and speaker hints, explicit and relative dates, temporal mode, and intent flags.
-
-Additional ranking signals cover lexical coverage, rare-term coverage, term proximity, source/entity/date alignment, current-state and causal language, and limited neighboring meeting context. Corpus-derived aliases expand corroborated acronyms. Attribution and disagreement queries preserve evidence diversity, while supported temporal-anchor clause families use a two-hop lookup.
-
-Retrieval operates only on temporally visible, sanitized `safe_text`. Results preserve evaluator-facing exact IDs and are capped at 20 ranked units.
-
-## Grounded Answering and Abstention
-
-The answering path builds an `EvidenceBundle` from retrieved visible units. A deterministic `SupportDecision` checks lexical coverage, requested focus, entity/source alignment, numeric support, and independent attribution before an answer is written.
-
-The default answerer is the offline extractive implementation. It uses intent-aware selectors for temporal changes, corrections, commitments, event lookups, ownership, attribution, disagreement, conditions, and other supported question families. Sources must be drawn from retrieved visible evidence and are capped at five. Insufficient evidence returns `I don't know.`
-
-An optional OpenAI-compatible writer is available, but it is not required and was not used for the reported train metrics. Invalid, unsafe, overly long, or incorrectly sourced model output falls back to the deterministic path.
-
-## Safety
-
-- Source text is always treated as untrusted data, never as instructions.
+- Source text is untrusted data, never instructions.
 - HTML-comment prompt injection is removed during sanitation.
-- Common credential formats and assignments are neutralized before retrieval and answering.
+- Common credential formats are neutralized before retrieval and answering.
 - Future and deleted material cannot enter the visible memory pool.
-- Model-written answers are validated against retrieved source IDs and sanitation rules.
-- All external actions are plans only; no Slack, Gmail, Calendar, application, or reminder integration is invoked.
-- Destructive requests return a confirmation plan instead of a destructive action.
-- Unresolved entities or timing fail closed with one clarification and no partial side effects.
+- Answer `sources` must be drawn from retrieved visible units (max 5).
+- Retrieval results are capped at 20 ranked exact units.
+- All external actions are plans only; no Slack, Gmail, Calendar, app, or reminder integration runs.
+- Destructive requests return confirmation only; no partial side effects accompany them.
 
-## TextOS Bonus
+## E. Memory answering
 
-`python3 main.py textos` starts a small terminal-native shell. Questions are answered through the frozen grounded-memory API. Commands are sent to the frozen action planner. A planned `memory.ask` is safe to resolve internally because it is read-only; all other actions are displayed with an explicit dry-run notice.
+The accepted answering path is:
 
-Supported dry-run action types:
+`QuestionFrame → frozen retrieved evidence → clause-level Claims → requested-slot support → generic composition`
 
-- `slack.send_message`
-- `gmail.send`
-- `calendar.create_event`
-- `calendar.update_event`
-- `reminder.create`
-- `memory.ask`
-- `app.open`
-- `clarify`
-- `confirm`
+- **QuestionFrame.** Parses the question into answer kind, subject/relation/property terms, modality requirement, attribution cues, and multi-part structure without train-specific selector precedence.
+- **Claim extraction.** Builds clause-level claims only from sanitized, citable evidence. Claims retain source, actor, availability, values, modality, correction, and attribution fields.
+- **Requested-slot support.** Support requires subject, relation, compatible value, and modality/attribution alignment. Topic overlap alone cannot authorize an answer.
+- **Abstention.** Unsupported slots return exactly `I don't know.` with no sources.
+- **Attribution / modality / conflict.** Direct versus reported speech, corrections, conditionals, and conflicting claims are handled in the generic composer rather than family-specific answer templates.
 
-The shell supports `/help`, `/asof <ISO timestamp>`, `/quit`, and `/exit`. It does not contain any execution or external-integration path.
+An optional OpenAI-compatible writer exists but is disabled by default and was not used for reported metrics.
 
-## Evaluation
+## F. TextOS action planning
 
-These are **provided train-set results**. Hidden evaluation uses different questions and commands, so these numbers should not be read as hidden-test performance.
+The accepted action path is:
 
-### Memory retrieval train set
+`normalized command → ActionFrame → operation + independent channel/slots → dataset entity/event resolution → global safety gate → typed dry-run action`
+
+- **ActionFrame.** Immutable parse of operation, channel, object/target/content/event/temporal/duration/offset/application, destructive flags, and compound clauses.
+- **Operation / channel / slot separation.** Communication, calendar create/update, reminders, memory queries, app open, and destructive ops are concepts separate from Slack/email/calendar media and from slot values.
+- **Entity / event resolution.** Contacts, channels, emails, and calendar events come from the supplied dataset. Ambiguous or unknown identities clarify rather than invent IDs.
+- **Global safety gate.** Every clause is assessed before ordinary dispatch as `SAFE`, `CONFIRM`, or `CLARIFY`. Destructive removal yields exactly one confirmation and never an accompanying side-effect action.
+- **Dry-run only.** Supported plan types: `slack.send_message`, `gmail.send`, `calendar.create_event`, `calendar.update_event`, `reminder.create`, `memory.ask`, `app.open`, `clarify`, `confirm`.
+
+## G. Generalization work
+
+The first implementation scored strongly on the provided train set, then showed weaker generalization under independent self-authored evaluation (Phase 7A audit). That audit did not claim hidden-test performance.
+
+The revised architecture (Phases 7B–7C) replaces train-shaped answer selectors and command-initial verb handlers with generic semantic representations: `QuestionFrame` / claims / requested-slot support for memory, and `ActionFrame` / operation-channel-slot separation with a global safety gate for actions.
+
+A later Phase 7D retrieval experiment was evaluated and rejected: its single-exit Shadow V2 holdout did not improve generalization and it regressed official retrieval. The accepted resubmission restores pre–7D retrieval. See `docs/GENERALIZATION_AUDIT.md`.
+
+## H. Evaluation
+
+Hidden evaluation uses different questions and commands. Numbers below are not hidden-test claims.
+
+### PROVIDED TRAIN SET
+
+Official scorers on the supplied train files, accepted runtime (`28827a8` lineage: Phase 7B answering + Phase 7C actions + pre–7D retrieval).
+
+#### Memory retrieval
 
 | Metric | Result |
 |---|---:|
@@ -144,22 +149,20 @@ These are **provided train-set results**. Hidden evaluation uses different quest
 | Questions with forbidden records at 10 | 0 |
 | Forbidden records retrieved at 20 | 0 |
 
-### Memory answers train set
-
-Measured with `score_memory.py --judge none`:
+#### Memory answers (`score_memory.py --judge none`)
 
 | Metric | Result |
 |---|---:|
-| Strict | 100% |
-| Lenient | 100% |
-| Unverified | 0 |
+| Strict | 48.15% |
+| Lenient | 55.56% |
+| Unverified | 2 |
 | Hard failures | 0 |
-| Source recall | 0.8467 |
-| Source precision | 0.98 |
+| Source recall | 0.42 |
+| Source precision | 0.6042 |
 
-The 100% answer result is the deterministic offline rules result. An external semantic judge was not run.
+No external semantic judge was required or run for these figures. The drop from the original train-perfect selector path is intentional: Phase 7B removed train-shaped selectors in favor of generic support/composition.
 
-### Actions train set
+#### Actions
 
 | Metric | Result |
 |---|---:|
@@ -167,84 +170,77 @@ The 100% answer result is the deterministic offline rules result. An external se
 | Pass rate | 100% |
 | Argument accuracy | 100% |
 
-## What Didn't Work and Iterations
+Rejected Phase 7D official retrieval metrics are not included in this table; they remain in the audit as a rejected experiment.
 
-- The initial Phase 2 lexical baseline reached 76% primary retrieval. Whole-record retrieval was stronger than exact-passage selection, which motivated explicit query planning and exact-unit reranking.
-- Broad commitment diversity displaced stronger evidence. Diversity was narrowed to attribution and disagreement queries.
-- Causal questions initially over-ranked passages that merely repeated old dates. Generic causal planning and state-aware reranking fixed that failure class.
-- The first deterministic extractive-answer pass scored 55.6%. Overbroad calendar selection, condition matching without entity alignment, and rank-first sentence selection caused composition errors.
-- Those answer failures were replaced with tested intent-aware selectors and a support gate rather than train-specific branches.
-- Phase 5 began with missing planner modules; generic fixes then addressed contact deduplication, channel phrasing, and event-title disambiguation. The completed action train set required no case-specific runtime logic.
+### SELF-AUTHORED GENERALIZATION EVALUATION
 
-## Key Decisions and Why
+These suites are **synthetic / self-authored**, derived from the supplied corpus. They are **not** an external blind benchmark and are **not** equivalent to the evaluator's hidden set. Holdouts were run **once** after development and were **not** tuned against afterwards.
 
-- **No vector database:** the corpus is small, and inspectable lexical ranking keeps evidence and failures easy to audit.
-- **No mandatory LLM:** deterministic offline behavior makes evaluation reproducible and removes runtime cost and availability dependencies.
-- **Visibility before retrieval:** future, edited, and deleted state cannot leak into ranking and be filtered too late.
-- **Exact citable units:** meeting segments and individual messages preserve precise provenance.
-- **Standard-library core:** a fresh Python installation is sufficient on macOS, Linux, or Windows.
-- **Dry-run TextOS:** typed plans demonstrate useful action reasoning without introducing credentials, OAuth, or irreversible effects.
+| Suite | Split | Result |
+|---|---|---|
+| Phase 7B memory | one-time HOLDOUT (19 cases) | 47.37% overall; 30.77% supported; 83.33% abstention |
+| Phase 7C actions | one-time HOLDOUT (23 cases) | 82.61% overall / type; 82.76% arg accuracy; 100% destructive no-side-effect |
 
-## Known Limits
+Full methodology, DEV numbers, and failure classes: `docs/GENERALIZATION_AUDIT.md`.
 
-- Hidden phrasing may expose unsupported heuristic language forms.
-- Alias inference is deliberately conservative and requires corroboration.
-- Temporal-anchor resolution supports defined clause families rather than arbitrary event reasoning.
-- Extractive answer composition remains heuristic even though every result is evidence-gated.
-- TextOS previews integrations but never executes them.
-- The optional model writer was not part of the measured train results.
-- No external semantic-judge result is reported.
+Consumed holdouts (Phase 7B memory, Phase 7C actions) and the rejected Phase 7D Shadow V2 holdout are **not** rerun for this submission.
 
-## Tools, Models, and Cost
+## I. Known limitations
 
-Core runtime:
+- Deterministic, lexicon-based semantic parsing rather than a general semantic model.
+- Lexical retrieval remains limited under distant paraphrase.
+- Answer composition remains weaker on supported multi-hop / multi-claim queries.
+- Self-authored holdouts are not equivalent to the evaluator's hidden set.
+- No real side effects; TextOS only previews integrations.
+- No external semantic judge is required or was run for reported memory metrics.
+- Alias inference is conservative and corroboration-gated.
+- Optional model writer was not part of measured results.
 
-- Python 3.10+ standard library
-- No paid runtime API required
+## J. Reproduction
 
-Optional answer integration:
-
-- OpenAI-compatible HTTP interface, disabled by default and not used for reported metrics
-
-Development:
-
-- OpenAI Codex desktop coding agent for implementation, testing, and review
-- Git and the supplied evaluator scripts
-
-External API spend for the reported implementation and evaluation: **₹0**.
-
-## Repository Layout
-
-```text
-data/                     supplied mock source data
-evals/                    supplied memory and action train sets
-eval_harness/             supplied official scorers
-examples/                 evaluator interface examples
-src/candor_memory/        ingestion, retrieval, answering, actions, TextOS
-tests/                    deterministic unit and CLI tests
-scripts/                  retrieval-freeze and full-submission verification
-outputs/                  canonical outputs and retained phase evidence
-main.py                   summary, memory, actions, and TextOS CLI
-```
-
-## Reproducing Results
-
-Run:
+One-command verification:
 
 ```bash
 python3 scripts/verify_submission.py
 ```
 
-The verifier runs the full test suite, regenerates both canonical output files, validates the frozen retrieval lists, invokes all three supplied scorers, checks measured invariants, audits schemas and list limits, regenerates outputs for byte-level determinism, and scans deliverables for unsafe material and machine-local Windows paths.
+The verifier fails on unit-test, generation, schema, nondeterminism, forbidden/future/deleted evidence, secret leakage, malformed or non-retrieved source IDs, action validation, destructive-safety, and portability problems. It **reports** provided-train retrieval/answer/action scores and points at recorded self-authored holdout results; imperfect train accuracy is **not** treated as a correctness failure.
+
+Direct evaluation commands:
+
+```bash
+python3 main.py memory --input evals/memory_train.jsonl --output outputs/memory_train_answers.jsonl
+python3 eval_harness/score_retrieval.py --gold evals/memory_train.jsonl --answers outputs/memory_train_answers.jsonl --data data --out outputs/retrieval_score.json
+python3 eval_harness/score_memory.py --gold evals/memory_train.jsonl --answers outputs/memory_train_answers.jsonl --data data --judge none --out outputs/memory_score.json
+python3 main.py actions --input evals/actions_train.jsonl --output outputs/actions_train_predictions.jsonl
+python3 eval_harness/score_actions.py --gold evals/actions_train.jsonl --predictions outputs/actions_train_predictions.jsonl --out outputs/actions_score.json
+```
 
 Canonical generated files:
 
 - `outputs/memory_train_answers.jsonl`
 - `outputs/actions_train_predictions.jsonl`
 
-Earlier phase score and debug artifacts are retained in `outputs/` as development evidence; the two files above are the submission outputs.
+## Repository layout
 
-## Submission Commit
+```text
+data/                     supplied mock source data
+evals/                    supplied train sets + self-authored generalization suites
+eval_harness/             supplied official scorers
+src/candor_memory/        ingestion, retrieval, answering, actions, TextOS
+tests/                    deterministic unit and CLI tests
+scripts/                  verification and generalization tooling
+outputs/                  canonical outputs and retained phase evidence
+docs/GENERALIZATION_AUDIT.md
+main.py                   summary, memory, actions, and TextOS CLI
+```
 
-The submitted commit hash should be obtained with `git rev-parse HEAD` after the final commit and included in the submission email. It is intentionally not embedded here, avoiding a self-referential commit-hash cycle.
+## Tools, models, and cost
 
+- Python 3.10+ standard library only for the required path
+- Optional OpenAI-compatible writer, disabled by default
+- External API spend for reported implementation and evaluation: **₹0**
+
+## Submission commit
+
+Obtain the submitted commit with `git rev-parse HEAD` after the final commit. It is intentionally not embedded here.

@@ -48,7 +48,7 @@ This sequence uses only commands supported by the final code. TextOS reads memor
    python3 scripts/verify_submission.py
    ```
 
-   - Summarize the provided train-set results: 100% primary retrieval, 100% offline strict memory score, and 12/12 action commands.
+   - Summarize the provided train-set results honestly: 100% primary retrieval, ~48% offline strict memory score with `judge=none` after the generic answering refactor (hard failures 0), and 12/12 action commands. Note that train accuracy is an evaluation metric, not a hidden-test claim.
 
 7. **Close — 20 seconds**
    - Reiterate the design priorities: temporal correctness, exact provenance, deterministic offline reproduction, and zero real side effects.
