@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any, Mapping
 
 from ..ingest import parse_datetime
+from .frames import decompose_action_clauses
 from .models import ActionCommand
 
 
@@ -64,15 +64,7 @@ def load_action_commands(path: str | Path) -> tuple[ActionCommand, ...]:
     return tuple(commands)
 
 
-_ATOMIC_START = (
-    r"email|message|tell|thank|remind|book|schedule|move|reschedule|"
-    r"open|delete|remove|wipe|clear"
-)
-
-
 def decompose_command(command: str) -> tuple[str, ...]:
     """Split only where a conjunction introduces another supported imperative."""
-
-    pieces = re.split(rf"\s+and\s+(?=(?:{_ATOMIC_START})\b)", command.strip(), flags=re.I)
-    return tuple(piece.strip(" ,") for piece in pieces if piece.strip(" ,"))
+    return decompose_action_clauses(command)
 

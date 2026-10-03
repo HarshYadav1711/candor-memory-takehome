@@ -15,14 +15,14 @@ from ..retrieval.tokenize import tokenize
 from ..safety import sanitize_text
 from ..visibility import visible_units
 from .entities import ContactDirectory, Person
+from .frames import ActionFrame, Channel, Operation, parse_action_frame
 from .models import ActionPlan, PlannedAction
 from .parser import decompose_command
-from .safety import confirmation_summary, is_safe_grounded_text, needs_confirmation
+from .safety import SafetyStatus, assess_safety, confirmation_summary, is_safe_grounded_text
 from .temporal import iso_local, parse_duration, resolve_datetime
 from .validation import validate_action
 
 
-_QUESTION = re.compile(r"^\s*(?:what(?:'s| is)?|who|when|where|why|how|which|do|did|is|are|has|have|can)\b", re.I)
 _CONTENT_STOP = frozenset(
     {
         "about", "ask", "corrected", "current", "email", "latest", "message",
@@ -57,17 +57,23 @@ class ActionPlanner:
         if not isinstance(command, str) or not command.strip():
             raise ValueError("command must be a non-empty string")
         command = command.strip()
-        if needs_confirmation(command):
+        clauses = decompose_command(command)
+        frames = tuple(parse_action_frame(clause) for clause in clauses)
+        safety = tuple(assess_safety(frame) for frame in frames)
+        if any(decision.status == SafetyStatus.CONFIRM for decision in safety):
             action = PlannedAction("confirm", {"summary": confirmation_summary(command)})
             validate_action(action)
             return ActionPlan((action,), {"safety_decision": "confirmation_required", "action_types": [action.type]})
+        if any(decision.status == SafetyStatus.CLARIFY for decision in safety):
+            action = self._clarify("What exactly should be removed or changed?")
+            validate_action(action)
+            return ActionPlan((action,), {"safety_decision": "clarification_required", "action_types": [action.type]})
 
         directory = ContactDirectory.from_data(self.data_dir, self.units, reference)
-        clauses = decompose_command(command)
         actions: list[PlannedAction] = []
         debug_intents: list[str] = []
-        for clause in clauses:
-            action, intent = self._plan_atomic(clause, reference, directory)
+        for frame in frames:
+            action, intent = self._plan_frame(frame, reference, directory)
             debug_intents.append(intent)
             if action.type == "clarify":
                 validate_action(action)
@@ -82,30 +88,28 @@ class ActionPlanner:
             {"atomic_intents": debug_intents, "safety_decision": "none", "action_types": [a.type for a in actions]},
         )
 
-    def _plan_atomic(
+    def _plan_frame(
         self,
-        clause: str,
+        frame: ActionFrame,
         as_of: datetime,
         directory: ContactDirectory,
     ) -> tuple[PlannedAction, str]:
-        lowered = clause.casefold().strip()
-        if clause.rstrip().endswith("?") or _QUESTION.match(clause):
-            return PlannedAction("memory.ask", {"question": clause.strip()}), "memory_question"
-        if re.match(r"^\s*open\b", clause, re.I):
-            app = re.sub(r"^\s*open\s+", "", clause, flags=re.I).strip(" .")
+        clause = frame.normalized_command
+        if frame.operation == Operation.QUERY_MEMORY:
+            return PlannedAction("memory.ask", {"question": frame.original_command.strip()}), "memory_question"
+        if frame.operation == Operation.OPEN_APP:
+            app = frame.application_phrase
             if not app:
                 return self._clarify("Which application should I open?"), "app_open"
             return PlannedAction("app.open", {"app": app}), "app_open"
-        if re.match(r"^\s*remind\b", clause, re.I):
+        if frame.operation == Operation.CREATE_REMINDER:
             return self._reminder(clause, as_of), "reminder_create"
-        if re.match(r"^\s*(?:move|reschedule)\b", clause, re.I):
+        if frame.operation == Operation.UPDATE_EVENT:
             return self._calendar_update(clause, as_of), "calendar_update"
-        if re.match(r"^\s*(?:book|schedule)\b", clause, re.I):
+        if frame.operation == Operation.CREATE_EVENT:
             return self._calendar_create(clause, as_of, directory), "calendar_create"
-        if re.match(r"^\s*email\b", clause, re.I):
-            return self._gmail(clause, as_of, directory), "gmail_send"
-        if re.match(r"^\s*(?:message|tell|thank)\b", clause, re.I):
-            return self._message(clause, as_of, directory), "message_send"
+        if frame.operation == Operation.COMMUNICATE:
+            return self._communicate(frame, as_of, directory)
         return self._clarify("What action would you like me to plan?"), "unknown"
 
     @staticmethod
@@ -120,15 +124,30 @@ class ActionPlanner:
         medium: str | None,
     ) -> tuple[Person | None, tuple[Person, ...], str]:
         lowered = clause.casefold()
-        full_matches = [person for person in directory.people if person.full_name.casefold() in lowered]
+        full_matches = [
+            person for person in directory.people
+            if re.search(rf"(?<![\w.-]){re.escape(person.full_name.casefold())}(?![\w.-])", lowered)
+        ]
         if len(full_matches) == 1:
             return full_matches[0], tuple(full_matches), full_matches[0].full_name
-        match = re.match(r"^\s*(?:email|message|thank)\s+([A-Za-z][A-Za-z'.-]*)", clause, re.I)
-        if not match:
-            return None, (), ""
-        query = match.group(1)
-        person, candidates = directory.resolve_person(query, medium=medium, context=clause)
-        return person, candidates, query
+        mentioned: list[tuple[int, str]] = []
+        for person in directory.people:
+            first = person.full_name.split()[0]
+            if first.casefold() in {"a", "an", "the", "team", "me", "my"}:
+                continue
+            match = re.search(rf"(?<![\w.-]){re.escape(first)}(?![\w.-])", clause, re.I)
+            if match:
+                mentioned.append((match.start(), first))
+        for query in dict.fromkeys(name for _, name in sorted(mentioned)):
+            topical = set(tokenize(clause)) - _CONTENT_STOP - {
+                "drop", "inform", "know", "let", "note", "notify", "ping", "reach", "write",
+                query.casefold(),
+            }
+            context = clause if len(topical) >= 2 else ""
+            person, candidates = directory.resolve_person(query, medium=medium, context=context)
+            if person is not None or candidates:
+                return person, candidates, query
+        return None, (), ""
 
     @staticmethod
     def _ambiguity_question(query: str, candidates: tuple[Person, ...]) -> str:
@@ -137,67 +156,99 @@ class ActionPlanner:
             return f"Which {query} do you mean: {', '.join(names)}?"
         return f"Who do you mean by {query or 'that person'}?"
 
-    def _message(self, clause: str, as_of: datetime, directory: ContactDirectory) -> PlannedAction:
-        if re.match(r"^\s*tell\b", clause, re.I):
-            for channel in sorted(directory.channels, key=lambda item: -len(item.name)):
-                name_pattern = r"[-\s]+".join(re.escape(part) for part in channel.name.split("-"))
-                channel_match = re.match(
-                    rf"^\s*tell\s+(?:the\s+)?#?{name_pattern}(?:\s+channel)?\s+(?:that\s+)?(.+)$",
+    def _communicate(
+        self, frame: ActionFrame, as_of: datetime, directory: ContactDirectory
+    ) -> tuple[PlannedAction, str]:
+        clause = frame.normalized_command
+        resolved_channel = next(
+            (
+                channel for channel in sorted(directory.channels, key=lambda item: -len(item.name))
+                if re.search(
+                    rf"(?<![\w-])#?{r'[-\s]+'.join(re.escape(part) for part in channel.name.split('-'))}(?:\s+channel)?(?![\w-])",
                     clause,
                     re.I,
                 )
-                if not channel_match:
-                    continue
-                requested = channel_match.group(1).strip()
-                text = self._resolve_requested_content(requested, as_of)
-                if text is None:
-                    return self._clarify(f"What should I tell #{channel.name}?")
-                return PlannedAction("slack.send_message", {"to": channel.channel_id, "text": text})
-
-        explicit_slack = bool(re.search(r"\bon\s+slack\b", clause, re.I))
-        person, candidates, query = self._person_from_clause(
-            clause, directory, medium="slack" if explicit_slack else None
+            ),
+            None,
         )
-        if person is None:
-            return self._clarify(self._ambiguity_question(query, candidates))
-        if not explicit_slack and len(candidates) > 1:
-            return self._clarify(self._ambiguity_question(query, candidates))
-        if person.slack_user_id:
-            target = person.slack_user_id
-            if re.match(r"^\s*thank\b", clause, re.I):
-                text = "Thank you."
-            else:
-                content_match = re.search(r"\b(?:that|about|to say)\s+(.+)$", clause, re.I)
-                requested = content_match.group(1).strip() if content_match else ""
+        medium = "gmail" if frame.communication_channel == Channel.EMAIL else (
+            "slack" if frame.communication_channel == Channel.SLACK or resolved_channel else None
+        )
+        person, candidates, query = self._person_from_clause(clause, directory, medium=medium)
+
+        if frame.communication_channel == Channel.SLACK or resolved_channel:
+            if resolved_channel:
+                requested = self._communication_content(frame, clause, channel_name=resolved_channel.name)
                 text = self._resolve_requested_content(requested, as_of)
                 if text is None:
-                    return self._clarify(f"What should I message {person.full_name}?")
-            return PlannedAction("slack.send_message", {"to": target, "text": text})
-        if not explicit_slack and person.emails:
-            return self._gmail_for_person(person, clause, as_of)
-        return self._clarify(f"I cannot resolve a Slack target for {person.full_name}.")
+                    return self._clarify(f"What should I tell #{resolved_channel.name}?"), "message_send"
+                return PlannedAction("slack.send_message", {"to": resolved_channel.channel_id, "text": text}), "message_send"
+            if person is None:
+                return self._clarify(self._ambiguity_question(query, candidates)), "message_send"
+            if not person.slack_user_id:
+                return self._clarify(f"I cannot resolve a Slack target for {person.full_name}."), "message_send"
+            requested = self._communication_content(frame, clause, person=person)
+            if re.match(r"^thank\b", clause, re.I) and not requested:
+                requested = "Thank you"
+            text = self._resolve_requested_content(requested, as_of)
+            if text is None:
+                return self._clarify(f"What should I message {person.full_name}?"), "message_send"
+            return PlannedAction("slack.send_message", {"to": person.slack_user_id, "text": text}), "message_send"
 
-    def _gmail(self, clause: str, as_of: datetime, directory: ContactDirectory) -> PlannedAction:
-        person, candidates, query = self._person_from_clause(clause, directory, medium="gmail")
+        if frame.communication_channel == Channel.EMAIL:
+            if person is None:
+                return self._clarify(self._ambiguity_question(query, candidates)), "gmail_send"
+            if not person.emails:
+                return self._clarify(f"What email address should I use for {person.full_name}?"), "gmail_send"
+            return self._gmail_for_person(person, frame, as_of), "gmail_send"
+
         if person is None:
-            return self._clarify(self._ambiguity_question(query, candidates))
-        if not person.emails:
-            return self._clarify(f"What email address should I use for {person.full_name}?")
-        return self._gmail_for_person(person, clause, as_of)
+            return self._clarify(self._ambiguity_question(query, candidates)), "communication"
+        if not person.slack_user_id:
+            return self._clarify(f"Should I contact {person.full_name} by Slack or email?"), "communication"
+        requested = self._communication_content(frame, clause, person=person)
+        text = self._resolve_requested_content(requested, as_of)
+        if text is None:
+            return self._clarify(f"What should I message {person.full_name}?"), "message_send"
+        return PlannedAction("slack.send_message", {"to": person.slack_user_id, "text": text}), "message_send"
 
-    def _gmail_for_person(self, person: Person, clause: str, as_of: datetime) -> PlannedAction:
-        requested = clause
-        requested = re.sub(r"^\s*email\s+", "", requested, flags=re.I)
-        requested = re.sub(re.escape(person.full_name), "", requested, count=1, flags=re.I).strip()
-        requested = re.sub(r"^(?:and\s+)?(?:ask|tell)\s+", "", requested, flags=re.I)
+    @staticmethod
+    def _communication_content(
+        frame: ActionFrame,
+        clause: str,
+        *,
+        person: Person | None = None,
+        channel_name: str = "",
+    ) -> str:
+        if frame.content_phrase:
+            return frame.content_phrase
+        requested = re.sub(
+            r"^\s*(?:message|tell|notify|inform|ping|thank|email|write(?:\s+an?\s+email)?(?:\s+to)?|"
+            r"send|drop|let|reach\s+out\s+to)\s+",
+            "",
+            clause,
+            flags=re.I,
+        )
+        requested = re.sub(r"^(?:a\s+(?:message|note)\s+to|this\s+to|an?\s+email\s+to)\s+", "", requested, flags=re.I)
+        if person:
+            requested = re.sub(re.escape(person.full_name), "", requested, count=1, flags=re.I)
+            requested = re.sub(rf"^\s*{re.escape(person.full_name.split()[0])}\b", "", requested, count=1, flags=re.I)
+        if channel_name:
+            pattern = r"[-\s]+".join(re.escape(part) for part in channel_name.split("-"))
+            requested = re.sub(rf"^(?:the\s+)?#?{pattern}(?:\s+channel)?\b", "", requested, count=1, flags=re.I)
+        requested = re.sub(r"\b(?:on\s+slack|by\s+email)\b", " ", requested, flags=re.I)
+        requested = re.sub(r"^(?:an?\s+email|a\s+(?:message|note))\s+", "", requested, flags=re.I)
+        requested = re.sub(r"^(?:and\s+)?(?:ask|tell|saying|that)\s+", "", requested, flags=re.I)
+        return re.sub(r"\s+", " ", requested).strip(" ,.")
+
+    def _gmail_for_person(self, person: Person, frame: ActionFrame, as_of: datetime) -> PlannedAction:
+        requested = self._communication_content(frame, frame.normalized_command, person=person)
         if re.search(r"\b(?:corrected|current|latest)\b", requested, re.I):
             body = self._resolve_requested_content(requested, as_of)
             if body is None:
                 return self._clarify(f"Which current fact should I email {person.full_name}?")
         else:
             body = requested.strip(" ,.") or "Hello."
-            if body.casefold().startswith("about "):
-                body = body[6:]
             body = body[:1].upper() + body[1:]
         subject_terms = [term for term in tokenize(requested) if term not in _CONTENT_STOP]
         subject = " ".join(subject_terms[:6]).strip().title() or "Follow-up"
@@ -213,11 +264,7 @@ class ActionPlanner:
         start = resolve_datetime(clause, as_of)
         if duration is None or start is None:
             return self._clarify("What date, time, and duration should I use for the event?")
-        person, candidates, query = self._person_from_clause(
-            re.sub(r"^\s*(?:book|schedule)(?:\s+\d+\s+\w+)?\s+with\s+", "Email ", clause, flags=re.I),
-            directory,
-            medium="gmail",
-        )
+        person, candidates, query = self._person_from_clause(clause, directory, medium="gmail")
         if person is None or not person.emails:
             return self._clarify(self._ambiguity_question(query, candidates))
         about = re.search(r"\babout\s+(.+)$", clause, re.I)
@@ -233,7 +280,13 @@ class ActionPlanner:
         )
 
     def _calendar_update(self, clause: str, as_of: datetime) -> PlannedAction:
-        match = re.match(r"^\s*(?:move|reschedule)\s+(.+?)\s+to\s+(.+)$", clause, re.I)
+        patterns = (
+            r"^\s*(?:move|reschedule|shift)\s+(.+?)\s+to\s+(.+)$",
+            r"^\s*change(?:\s+the\s+time\s+of)?\s+(.+?)\s+to\s+(.+)$",
+            r"^\s*push\s+back\s+(.+?)\s+to\s+(.+)$",
+            r"^\s*bring\s+(.+?)\s+forward\s+to\s+(.+)$",
+        )
+        match = next((candidate for pattern in patterns if (candidate := re.match(pattern, clause, re.I))), None)
         if not match:
             return self._clarify("Which event should I move, and to when?")
         event = self._match_event(match.group(1), as_of)
@@ -266,12 +319,16 @@ class ActionPlanner:
         due = resolve_datetime(clause, as_of)
         if due is None:
             return self._clarify("When should I set the reminder?")
-        text_match = re.search(r"\bto\s+(.+?)(?=\s+(?:on\s+the|today|tomorrow|yesterday|at\s+\d)|$)", clause, re.I)
+        text_match = re.search(r"\bto\s+(.+)$", clause, re.I)
         if text_match:
             text = text_match.group(1).strip(" .")
         else:
             after_time = re.search(r"\b(?:am|pm)\s+to\s+(.+)$", clause, re.I)
-            text = (after_time.group(1) if after_time else re.sub(r"^\s*remind\s+me\s+", "", clause, flags=re.I)).strip(" .")
+            prefix = (
+                r"^\s*(?:remind\s+me|do\s+not\s+let\s+me\s+forget|don't\s+let\s+me\s+forget|"
+                r"give\s+me\s+(?:a\s+)?reminder|set\s+(?:a\s+)?reminder|ping\s+me)\s+"
+            )
+            text = (after_time.group(1) if after_time else re.sub(prefix, "", clause, flags=re.I)).strip(" .")
         return PlannedAction("reminder.create", {"text": text, "due": iso_local(due)})
 
     def _events(self, as_of: datetime) -> tuple[_CalendarEvent, ...]:
@@ -301,6 +358,8 @@ class ActionPlanner:
     def _match_event(self, query: str, as_of: datetime) -> _CalendarEvent | None:
         ignored = {"the", "meeting", "event", "calendar"}
         query_terms = set(tokenize(query)) - ignored
+        if len(query_terms) == 1 and query_terms <= {"planning", "sync", "check", "review"}:
+            return None
         normalized_query = " ".join(
             term for term in tokenize(query) if term not in {"the", "event", "calendar"}
         )
